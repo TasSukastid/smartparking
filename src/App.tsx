@@ -518,17 +518,44 @@ const GarageListView = () => {
 };
 
 // ── Map helpers ──────────────────────────────────────────────────────────────
+const FitBoundsOnRoute = ({ positions }: { positions: [number, number][] }) => {
+  const map = useMap();
+  const routeKey =
+    positions.length > 1
+      ? `${positions[0]},${positions[positions.length - 1]}`
+      : '';
+  useEffect(() => {
+    if (positions.length > 1) {
+      map.fitBounds(L.latLngBounds(positions), { padding: [56, 56], maxZoom: 15, animate: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeKey]);
+  return null;
+};
+
 const MapController = ({
   position,
   follow,
+  startZoom,
 }: {
   position: [number, number] | null;
   follow: boolean;
+  startZoom?: number;
 }) => {
   const map = useMap();
+  const prevFollow = useRef(false);
   useEffect(() => {
-    if (follow && position) map.panTo(position, { animate: true, duration: 0.7 });
-  }, [position, follow, map]);
+    if (follow && position) {
+      if (!prevFollow.current && startZoom) {
+        map.flyTo(position, startZoom, { animate: true, duration: 0.9 });
+      } else {
+        map.panTo(position, { animate: true, duration: 0.7 });
+      }
+      prevFollow.current = true;
+    } else if (!follow) {
+      prevFollow.current = false;
+    }
+  }, [position, follow, map, startZoom]);
   return null;
 };
 
@@ -820,7 +847,7 @@ const NavigationModal = ({ garage, userLat: initLat, userLng: initLng, onClose }
         <div className="flex-1 relative min-h-0">
           <MapContainer
             center={mapCenter}
-            zoom={isNavigating ? 17 : (hasInitLoc ? 13 : 16)}
+            zoom={hasInitLoc ? 13 : 16}
             style={{ height: '100%', width: '100%' }}
             zoomControl={!isNavigating}
           >
@@ -833,6 +860,10 @@ const NavigationModal = ({ garage, userLat: initLat, userLng: initLng, onClose }
             {routePositions.length > 0 && (
               <Polyline positions={routePositions} color="#3b82f6" weight={5} opacity={0.85} />
             )}
+            {/* Fit full route in preview mode */}
+            {!isNavigating && routePositions.length > 1 && (
+              <FitBoundsOnRoute positions={routePositions} />
+            )}
             {userMarkerPos && (
               <RecenterControl
                 lat={userMarkerPos[0]}
@@ -840,7 +871,11 @@ const NavigationModal = ({ garage, userLat: initLat, userLng: initLng, onClose }
                 onRecenter={() => setFollowUser(true)}
               />
             )}
-            <MapController position={userMarkerPos} follow={isNavigating && followUser} />
+            <MapController
+              position={userMarkerPos}
+              follow={isNavigating && followUser}
+              startZoom={17}
+            />
           </MapContainer>
         </div>
 
