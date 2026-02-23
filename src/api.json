@@ -1,0 +1,189 @@
+{
+    "status": "success",
+    "count": 2,
+    "buildings": [
+        {
+            "id": 1,
+            "building_name": "MUICT Building",
+            "address": "Mahidol University, Salaya Campus",
+            "apiUrl": "/api/parking-spots/stream",
+            "total_floors": 1,
+            "created_at": "2026-02-18T22:11:34",
+            "latitude": 13.79553358,
+            "longitude": 100.32474721,
+            "floors": [
+                {
+                    "id": 1,
+                    "building_id": 1,
+                    "floor_name": "Floor 1",
+                    "total_capacity": 5,
+                    "parking_spots": [
+                        {
+                            "id": 1,
+                            "floor_id": 1,
+                            "spot_number": "M1-01",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-19T01:22:41"
+                        },
+                        {
+                            "id": 2,
+                            "floor_id": 1,
+                            "spot_number": "M1-02",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-19T01:22:53"
+                        },
+                        {
+                            "id": 3,
+                            "floor_id": 1,
+                            "spot_number": "M1-03",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-19T01:22:47"
+                        },
+                        {
+                            "id": 4,
+                            "floor_id": 1,
+                            "spot_number": "M1-04",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-19T01:22:07"
+                        },
+                        {
+                            "id": 5,
+                            "floor_id": 1,
+                            "spot_number": "M1-05",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-19T01:22:29"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 2,
+            "building_name": "Central Salaya",
+            "address": "99/9 Borommaratchachonnani Rd, Salaya, Phutthamonthon, Nakhon Pathom",
+            "total_floors": 2,
+            "created_at": "2026-02-18T22:11:34",
+            "latitude": 13.787941209509873,
+            "longitude": 100.2766620869205,
+            "floors": [
+                {
+                    "id": 2,
+                    "building_id": 2,
+                    "floor_name": "Floor 1",
+                    "total_capacity": 6,
+                    "parking_spots": [
+                        {
+                            "id": 6,
+                            "floor_id": 2,
+                            "spot_number": "C1-01",
+                            "is_occupied": 1,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:10:00"
+                        },
+                        {
+                            "id": 7,
+                            "floor_id": 2,
+                            "spot_number": "C1-02",
+                            "is_occupied": 1,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:11:00"
+                        },
+                        {
+                            "id": 8,
+                            "floor_id": 2,
+                            "spot_number": "C1-03",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:12:00"
+                        },
+                        {
+                            "id": 9,
+                            "floor_id": 2,
+                            "spot_number": "C1-04",
+                            "is_occupied": 1,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:13:00"
+                        },
+                        {
+                            "id": 10,
+                            "floor_id": 2,
+                            "spot_number": "C1-05",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:14:00"
+                        },
+                        {
+                            "id": 11,
+                            "floor_id": 2,
+                            "spot_number": "C1-06",
+                            "is_occupied": 1,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:15:00"
+                        }
+                    ]
+                },
+                {
+                    "id": 3,
+                    "building_id": 2,
+                    "floor_name": "Floor 2",
+                    "total_capacity": 6,
+                    "parking_spots": [
+                        {
+                            "id": 12,
+                            "floor_id": 3,
+                            "spot_number": "C2-01",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:10:00"
+                        },
+                        {
+                            "id": 13,
+                            "floor_id": 3,
+                            "spot_number": "C2-02",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:11:00"
+                        },
+                        {
+                            "id": 14,
+                            "floor_id": 3,
+                            "spot_number": "C2-03",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:12:00"
+                        },
+                        {
+                            "id": 15,
+                            "floor_id": 3,
+                            "spot_number": "C2-04",
+                            "is_occupied": 1,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:13:00"
+                        },
+                        {
+                            "id": 16,
+                            "floor_id": 3,
+                            "spot_number": "C2-05",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:14:00"
+                        },
+                        {
+                            "id": 17,
+                            "floor_id": 3,
+                            "spot_number": "C2-06",
+                            "is_occupied": 0,
+                            "camera_url": null,
+                            "last_update": "2026-02-23T08:15:00"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
