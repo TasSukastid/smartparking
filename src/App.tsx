@@ -21,7 +21,7 @@ import {
 import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { motion, AnimatePresence } from 'motion/react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   createBrowserRouter,
   RouterProvider,
@@ -517,12 +517,37 @@ const GarageListView = () => {
   );
 };
 
-// ── NavigationModal ──────────────────────────────────────────────────────────
-const RecenterControl = ({ lat, lng }: { lat: number; lng: number }) => {
+// ── Map helpers ──────────────────────────────────────────────────────────────
+const MapController = ({
+  position,
+  follow,
+}: {
+  position: [number, number] | null;
+  follow: boolean;
+}) => {
+  const map = useMap();
+  useEffect(() => {
+    if (follow && position) map.panTo(position, { animate: true, duration: 0.7 });
+  }, [position, follow, map]);
+  return null;
+};
+
+const RecenterControl = ({
+  lat,
+  lng,
+  onRecenter,
+}: {
+  lat: number;
+  lng: number;
+  onRecenter?: () => void;
+}) => {
   const map = useMap();
   return (
     <button
-      onClick={() => map.flyTo([lat, lng], 16, { duration: 1 })}
+      onClick={() => {
+        map.flyTo([lat, lng], 17, { duration: 1 });
+        onRecenter?.();
+      }}
       className="absolute bottom-4 right-4 z-[1000] bg-white shadow-lg rounded-xl p-2.5 border border-slate-200 hover:bg-primary/10 hover:border-primary/30 transition-colors"
       title="Center on my location"
     >
@@ -552,7 +577,7 @@ type OsrmStep = {
   distance: number;
   duration: number;
   name: string;
-  maneuver: { type: string; modifier?: string };
+  maneuver: { type: string; modifier?: string; location: [number, number] };
 };
 type OsrmRoute = {
   distance: number;
@@ -589,44 +614,143 @@ type NavModalProps = {
   onClose: () => void;
 };
 
-const NavigationModal = ({ garage, userLat, userLng, onClose }: NavModalProps) => {
-  const hasLoc = userLat != null && userLng != null;
+const NavigationModal = ({ garage, userLat: initLat, userLng: initLng, onClose }: NavModalProps) => {
+  const hasInitLoc = initLat != null && initLng != null;
+
+  // route & loading
   const [route, setRoute] = useState<OsrmRoute | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
 
+  // navigation mode
+  const [navMode, setNavMode] = useState<'preview' | 'navigating'>('preview');
+  const [livePos, setLivePos] = useState<[number, number] | null>(
+    hasInitLoc ? [initLat!, initLng!] : null,
+  );
+  const [stepIdx, setStepIdx] = useState(0);
+  const [followUser, setFollowUser] = useState(true);
+  const [rerouting, setRerouting] = useState(false);
+  const watchRef = useRef<number | null>(null);
+  const rerouteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── fetch route ────────────────────────────────────────────────────────────
+  const fetchRoute = useCallback(
+    async (fromLat: number, fromLng: number) => {
+      setRouteLoading(true);
+      setRouteError(null);
+      try {
+        const res = await fetch(
+          `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${garage.lng},${garage.lat}?overview=full&geometries=geojson&steps=true`,
+        );
+        const data = await res.json();
+        if (data.routes?.[0]) {
+          setRoute(data.routes[0]);
+          setStepIdx(0);
+        } else setRouteError('No route found');
+      } catch {
+        setRouteError('Could not load route');
+      } finally {
+        setRouteLoading(false);
+        setRerouting(false);
+      }
+    },
+    [garage.lat, garage.lng],
+  );
+
   useEffect(() => {
-    if (!hasLoc) return;
-    setRouteLoading(true);
-    fetch(
-      `https://router.project-osrm.org/route/v1/driving/${userLng},${userLat};${garage.lng},${garage.lat}?overview=full&geometries=geojson&steps=true`,
-    )
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.routes?.[0]) setRoute(data.routes[0]);
-        else setRouteError('No route found');
-      })
-      .catch(() => setRouteError('Could not load route'))
-      .finally(() => setRouteLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (hasInitLoc) fetchRoute(initLat!, initLng!);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── start / stop GPS watch ─────────────────────────────────────────────────
+  const stopWatch = useCallback(() => {
+    if (watchRef.current != null) {
+      navigator.geolocation.clearWatch(watchRef.current);
+      watchRef.current = null;
+    }
+    if (rerouteTimer.current) clearTimeout(rerouteTimer.current);
+  }, []);
+
+  const startNavigation = useCallback(() => {
+    setNavMode('navigating');
+    setFollowUser(true);
+    if (!navigator.geolocation) return;
+    watchRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const newPos: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setLivePos(newPos);
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 1500, timeout: 10000 },
+    );
+  }, []);
+
+  const stopNavigation = useCallback(() => {
+    stopWatch();
+    setNavMode('preview');
+    setFollowUser(false);
+  }, [stopWatch]);
+
+  useEffect(() => () => stopWatch(), [stopWatch]);
+
+  // ── auto-advance step when close to next maneuver ─────────────────────────
+  useEffect(() => {
+    if (!livePos || !route || navMode !== 'navigating') return;
+    const steps = route.legs[0]?.steps ?? [];
+    // Check arrival at destination
+    const destDist =
+      Math.hypot(livePos[0] - garage.lat, livePos[1] - garage.lng) * 111_000;
+    if (destDist < 25) {
+      stopWatch();
+      setNavMode('preview');
+      return;
+    }
+    // Advance to next step if within 35 m of next maneuver
+    const nextStep = steps[stepIdx + 1];
+    if (nextStep) {
+      const [nLng, nLat] = nextStep.maneuver.location;
+      const d = Math.hypot(livePos[0] - nLat, livePos[1] - nLng) * 111_000;
+      if (d < 35) setStepIdx((i) => i + 1);
+    }
+    // Re-route if far from current step maneuver (>120 m)
+    const curStep = steps[stepIdx];
+    if (curStep && !rerouting) {
+      const [cLng, cLat] = curStep.maneuver.location;
+      const offRoute = Math.hypot(livePos[0] - cLat, livePos[1] - cLng) * 111_000;
+      if (offRoute > 120) {
+        setRerouting(true);
+        if (rerouteTimer.current) clearTimeout(rerouteTimer.current);
+        rerouteTimer.current = setTimeout(() => {
+          fetchRoute(livePos[0], livePos[1]);
+        }, 1500);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePos]);
+
+  // ── derived values ─────────────────────────────────────────────────────────
+  const steps = route?.legs[0]?.steps ?? [];
+  const currentStep = steps[stepIdx];
+  const nextStep = steps[stepIdx + 1];
   const routePositions: [number, number][] =
     route?.geometry.coordinates.map(([lng, lat]) => [lat, lng]) ?? [];
-
-  const mapCenter: [number, number] = hasLoc
-    ? [(userLat! + garage.lat) / 2, (userLng! + garage.lng) / 2]
+  const userMarkerPos = livePos ?? (hasInitLoc ? [initLat!, initLng!] as [number,number] : null);
+  const mapCenter: [number, number] = userMarkerPos
+    ? navMode === 'navigating'
+      ? userMarkerPos
+      : [(userMarkerPos[0] + garage.lat) / 2, (userMarkerPos[1] + garage.lng) / 2]
     : [garage.lat, garage.lng];
 
-  const steps = route?.legs[0]?.steps ?? [];
+  const isNavigating = navMode === 'navigating';
 
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[9999] bg-black/50 flex flex-col items-center justify-end"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      className="fixed inset-0 z-[9999] flex flex-col items-center justify-end"
+      style={{ background: isNavigating ? 'transparent' : 'rgba(0,0,0,0.5)' }}
+      onClick={(e) => !isNavigating && e.target === e.currentTarget && onClose()}
     >
       <motion.div
         initial={{ y: '100%' }}
@@ -634,63 +758,101 @@ const NavigationModal = ({ garage, userLat, userLng, onClose }: NavModalProps) =
         exit={{ y: '100%' }}
         transition={{ type: 'spring', damping: 30, stiffness: 300 }}
         className="flex flex-col bg-white w-full max-w-md rounded-t-3xl overflow-hidden"
-        style={{ height: '90dvh' }}
+        style={{ height: isNavigating ? '100dvh' : '90dvh', borderRadius: isNavigating ? 0 : undefined }}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 shrink-0">
-          <div className="flex-1 min-w-0">
-            <h3 className="font-black text-slate-900 text-sm truncate">{garage.name}</h3>
-            {routeLoading && (
-              <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 font-semibold">
-                <Loader2 size={9} className="animate-spin" /> Calculating route...
-              </p>
-            )}
-            {route && !routeLoading && (
-              <p className="text-[10px] text-primary font-bold mt-0.5">
-                {fmtDist(route.distance)} · {fmtTime(route.duration)} by car
-              </p>
-            )}
-            {!hasLoc && (
-              <p className="text-[10px] text-amber-500 font-semibold mt-0.5">
-                Enable location for turn-by-turn routing
-              </p>
-            )}
+        {/* ── NAVIGATING header — current step overlay ── */}
+        {isNavigating && currentStep && (
+          <div className="shrink-0 bg-primary text-white px-4 pt-10 pb-4 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-semibold opacity-70 uppercase tracking-wider mb-0.5">
+                  {fmtDist(currentStep.distance)}
+                </p>
+                <h3 className="font-black text-base leading-tight">
+                  {formatStep(currentStep)}
+                </h3>
+                {nextStep && (
+                  <p className="text-[10px] opacity-70 mt-1 font-semibold">
+                    Then: {formatStep(nextStep)}
+                  </p>
+                )}
+              </div>
+              {rerouting && (
+                <div className="flex items-center gap-1 text-[10px] font-bold bg-white/20 rounded-lg px-2 py-1 shrink-0">
+                  <Loader2 size={10} className="animate-spin" /> Re-routing
+                </div>
+              )}
+            </div>
           </div>
-          <button
-            onClick={onClose}
-            className="ml-3 p-2 rounded-full hover:bg-slate-100 text-slate-500 transition-colors shrink-0"
-          >
-            <X size={18} />
-          </button>
-        </div>
+        )}
 
-        {/* Map */}
+        {/* ── PREVIEW header ── */}
+        {!isNavigating && (
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 shrink-0">
+            <div className="flex-1 min-w-0">
+              <h3 className="font-black text-slate-900 text-sm truncate">{garage.name}</h3>
+              {routeLoading && (
+                <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 font-semibold">
+                  <Loader2 size={9} className="animate-spin" /> Calculating route...
+                </p>
+              )}
+              {route && !routeLoading && (
+                <p className="text-[10px] text-primary font-bold mt-0.5">
+                  {fmtDist(route.distance)} · {fmtTime(route.duration)} by car
+                </p>
+              )}
+              {!hasInitLoc && (
+                <p className="text-[10px] text-amber-500 font-semibold mt-0.5">
+                  Enable location for turn-by-turn routing
+                </p>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="ml-3 p-2 rounded-full hover:bg-slate-100 text-slate-500 transition-colors shrink-0"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        )}
+
+        {/* ── Map ── */}
         <div className="flex-1 relative min-h-0">
           <MapContainer
             center={mapCenter}
-            zoom={hasLoc ? 13 : 16}
+            zoom={isNavigating ? 17 : (hasInitLoc ? 13 : 16)}
             style={{ height: '100%', width: '100%' }}
-            zoomControl
+            zoomControl={!isNavigating}
           >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             <Marker position={[garage.lat, garage.lng]} icon={garageDivIcon} />
-            {hasLoc && <Marker position={[userLat!, userLng!]} icon={userDivIcon} />}
+            {userMarkerPos && <Marker position={userMarkerPos} icon={userDivIcon} />}
             {routePositions.length > 0 && (
               <Polyline positions={routePositions} color="#3b82f6" weight={5} opacity={0.85} />
             )}
-            {hasLoc && <RecenterControl lat={userLat!} lng={userLng!} />}
+            {userMarkerPos && (
+              <RecenterControl
+                lat={userMarkerPos[0]}
+                lng={userMarkerPos[1]}
+                onRecenter={() => setFollowUser(true)}
+              />
+            )}
+            <MapController position={userMarkerPos} follow={isNavigating && followUser} />
           </MapContainer>
         </div>
 
-        {/* Steps */}
-        {steps.length > 1 && (
+        {/* ── PREVIEW steps list ── */}
+        {!isNavigating && steps.length > 1 && (
           <div className="shrink-0 max-h-44 overflow-y-auto border-t border-slate-100">
             <div className="px-4 py-2 space-y-0.5">
               {steps.slice(0, -1).map((step, i) => (
-                <div key={i} className="flex items-start gap-2.5 py-1.5 border-b border-slate-50 last:border-0">
+                <div
+                  key={i}
+                  className="flex items-start gap-2.5 py-1.5 border-b border-slate-50 last:border-0"
+                >
                   <span className="text-[10px] font-bold text-primary bg-primary/10 rounded-full w-5 h-5 flex items-center justify-center shrink-0 mt-0.5">
                     {i + 1}
                   </span>
@@ -713,9 +875,46 @@ const NavigationModal = ({ garage, userLat, userLng, onClose }: NavModalProps) =
           </div>
         )}
 
-        {routeError && (
-          <div className="shrink-0 px-4 py-2.5 bg-red-50 border-t border-red-100">
-            <p className="text-xs text-red-500 font-semibold text-center">{routeError}</p>
+        {/* ── PREVIEW — Start button ── */}
+        {!isNavigating && (
+          <div className="shrink-0 px-4 py-3 border-t border-slate-100">
+            {routeError && (
+              <p className="text-xs text-red-500 font-semibold text-center mb-2">{routeError}</p>
+            )}
+            <button
+              onClick={startNavigation}
+              disabled={!route || !hasInitLoc}
+              className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary/90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Navigation2 size={16} />
+              {!hasInitLoc ? 'Enable GPS to navigate' : routeLoading ? 'Loading route...' : 'Start Navigation'}
+            </button>
+          </div>
+        )}
+
+        {/* ── NAVIGATING bottom bar ── */}
+        {isNavigating && route && (
+          <div className="shrink-0 bg-white border-t border-slate-100 px-4 py-3 flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-black text-slate-900">
+                {fmtDist(route.distance)}
+              </p>
+              <p className="text-[10px] text-slate-400 font-semibold">
+                {fmtTime(route.duration)} · via car
+              </p>
+            </div>
+            <button
+              onClick={stopNavigation}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-colors"
+            >
+              <X size={13} /> Stop
+            </button>
+            <button
+              onClick={onClose}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 text-slate-600 font-bold text-xs hover:bg-slate-200 transition-colors"
+            >
+              Exit
+            </button>
           </div>
         )}
       </motion.div>
