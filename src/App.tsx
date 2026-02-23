@@ -537,17 +537,31 @@ const MapController = ({
   position,
   follow,
   startZoom,
+  invalidate,
 }: {
   position: [number, number] | null;
   follow: boolean;
   startZoom?: number;
+  invalidate?: boolean;
 }) => {
   const map = useMap();
   const prevFollow = useRef(false);
+
+  // Re-measure map when container resizes (e.g. modal 90dvh → 100dvh)
+  useEffect(() => {
+    const id = setTimeout(() => map.invalidateSize(), 80);
+    return () => clearTimeout(id);
+  }, [invalidate, map]);
+
   useEffect(() => {
     if (follow && position) {
       if (!prevFollow.current && startZoom) {
-        map.flyTo(position, startZoom, { animate: true, duration: 0.9 });
+        // Slight delay so invalidateSize settles first
+        const id = setTimeout(
+          () => map.flyTo(position, startZoom, { animate: true, duration: 0.9 }),
+          100,
+        );
+        return () => clearTimeout(id);
       } else {
         map.panTo(position, { animate: true, duration: 0.7 });
       }
@@ -875,6 +889,7 @@ const NavigationModal = ({ garage, userLat: initLat, userLng: initLng, onClose }
               position={userMarkerPos}
               follow={isNavigating && followUser}
               startZoom={17}
+              invalidate={isNavigating}
             />
           </MapContainer>
         </div>
