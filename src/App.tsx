@@ -15,8 +15,11 @@ import {
   Camera,
   RefreshCw,
   Loader2,
-  ExternalLink,
+  X,
+  ChevronRight,
 } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
+import L from 'leaflet';
 import { motion, AnimatePresence } from 'motion/react';
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -227,7 +230,7 @@ const AppNavbar = () => {
 
   return (
     <header className="bg-white/80 backdrop-blur-md sticky top-0 z-50 border-b border-slate-100">
-      <div className="max-w-md mx-auto px-4 h-14 flex items-center gap-3">
+      <div className="w-full px-4 h-14 flex items-center gap-3">
         {isDetail ? (
           <Link
             to="/"
@@ -442,7 +445,7 @@ const GarageListView = () => {
             exit={{ height: 0, opacity: 0 }}
             className="bg-blue-50 border-b border-blue-100 overflow-hidden"
           >
-            <div className="max-w-md mx-auto px-4 py-2 flex items-center gap-2 text-blue-600 text-xs font-semibold">
+            <div className="w-full px-4 py-2 flex items-center gap-2 text-blue-600 text-xs font-semibold">
               <Loader2 size={13} className="animate-spin shrink-0" />
               Getting your location...
             </div>
@@ -456,7 +459,7 @@ const GarageListView = () => {
             exit={{ height: 0, opacity: 0 }}
             className="bg-emerald-50 border-b border-emerald-100 overflow-hidden"
           >
-            <div className="max-w-md mx-auto px-4 py-2 flex items-center gap-2 text-emerald-600 text-xs font-semibold">
+            <div className="w-full px-4 py-2 flex items-center gap-2 text-emerald-600 text-xs font-semibold">
               <LocateFixed size={13} className="shrink-0" />
               Showing distances from your location
             </div>
@@ -470,7 +473,7 @@ const GarageListView = () => {
             exit={{ height: 0, opacity: 0 }}
             className="bg-amber-50 border-b border-amber-100 overflow-hidden"
           >
-            <div className="max-w-md mx-auto px-4 py-2 flex items-center gap-2 text-amber-600 text-xs font-semibold">
+            <div className="w-full px-4 py-2 flex items-center gap-2 text-amber-600 text-xs font-semibold">
               <Navigation size={13} className="shrink-0" />
               Location unavailable -{' '}
               <button onClick={requestGps} className="underline">
@@ -481,7 +484,7 @@ const GarageListView = () => {
         )}
       </AnimatePresence>
 
-      <div className="max-w-md mx-auto px-4 py-4 space-y-4">
+      <div className="w-full px-3 py-4 space-y-4">
         {/* Search */}
         <div className="relative">
           <Search
@@ -511,6 +514,212 @@ const GarageListView = () => {
         )}
       </div>
     </div>
+  );
+};
+
+// ── NavigationModal ──────────────────────────────────────────────────────────
+const RecenterControl = ({ lat, lng }: { lat: number; lng: number }) => {
+  const map = useMap();
+  return (
+    <button
+      onClick={() => map.flyTo([lat, lng], 16, { duration: 1 })}
+      className="absolute bottom-4 right-4 z-[1000] bg-white shadow-lg rounded-xl p-2.5 border border-slate-200 hover:bg-primary/10 hover:border-primary/30 transition-colors"
+      title="Center on my location"
+    >
+      <LocateFixed size={18} className="text-primary" />
+    </button>
+  );
+};
+
+// ── NavigationModal ──────────────────────────────────────────────────────────
+const userDivIcon = L.divIcon({
+  html: `<div style="width:16px;height:16px;background:#3b82f6;border:3px solid white;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.35)"></div>`,
+  className: '',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
+const garageDivIcon = L.divIcon({
+  html: `<div style="display:flex;align-items:center;justify-content:center">
+    <svg viewBox="0 0 24 24" width="36" height="36"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ef4444"/></svg>
+  </div>`,
+  className: '',
+  iconSize: [36, 36],
+  iconAnchor: [18, 36],
+});
+
+type OsrmStep = {
+  distance: number;
+  duration: number;
+  name: string;
+  maneuver: { type: string; modifier?: string };
+};
+type OsrmRoute = {
+  distance: number;
+  duration: number;
+  geometry: { coordinates: [number, number][] };
+  legs: [{ steps: OsrmStep[] }];
+};
+
+function formatStep(step: OsrmStep): string {
+  const { type, modifier } = step.maneuver;
+  const name = step.name;
+  if (type === 'depart') return name ? `Start on ${name}` : 'Depart';
+  if (type === 'arrive') return 'Arrive at destination';
+  if (modifier) {
+    const dir = modifier.replace('-', ' ');
+    const dirCap = dir.charAt(0).toUpperCase() + dir.slice(1);
+    return name ? `${dirCap} onto ${name}` : dirCap;
+  }
+  return name ? `Continue on ${name}` : 'Continue';
+}
+
+function fmtDist(m: number) {
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+}
+function fmtTime(s: number) {
+  const min = Math.round(s / 60);
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+type NavModalProps = {
+  garage: Garage;
+  userLat?: number;
+  userLng?: number;
+  onClose: () => void;
+};
+
+const NavigationModal = ({ garage, userLat, userLng, onClose }: NavModalProps) => {
+  const hasLoc = userLat != null && userLng != null;
+  const [route, setRoute] = useState<OsrmRoute | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hasLoc) return;
+    setRouteLoading(true);
+    fetch(
+      `https://router.project-osrm.org/route/v1/driving/${userLng},${userLat};${garage.lng},${garage.lat}?overview=full&geometries=geojson&steps=true`,
+    )
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.routes?.[0]) setRoute(data.routes[0]);
+        else setRouteError('No route found');
+      })
+      .catch(() => setRouteError('Could not load route'))
+      .finally(() => setRouteLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const routePositions: [number, number][] =
+    route?.geometry.coordinates.map(([lng, lat]) => [lat, lng]) ?? [];
+
+  const mapCenter: [number, number] = hasLoc
+    ? [(userLat! + garage.lat) / 2, (userLng! + garage.lng) / 2]
+    : [garage.lat, garage.lng];
+
+  const steps = route?.legs[0]?.steps ?? [];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[9999] bg-black/50 flex flex-col items-center justify-end"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ y: '100%' }}
+        animate={{ y: 0 }}
+        exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+        className="flex flex-col bg-white w-full max-w-md rounded-t-3xl overflow-hidden"
+        style={{ height: '90dvh' }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 shrink-0">
+          <div className="flex-1 min-w-0">
+            <h3 className="font-black text-slate-900 text-sm truncate">{garage.name}</h3>
+            {routeLoading && (
+              <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 font-semibold">
+                <Loader2 size={9} className="animate-spin" /> Calculating route...
+              </p>
+            )}
+            {route && !routeLoading && (
+              <p className="text-[10px] text-primary font-bold mt-0.5">
+                {fmtDist(route.distance)} · {fmtTime(route.duration)} by car
+              </p>
+            )}
+            {!hasLoc && (
+              <p className="text-[10px] text-amber-500 font-semibold mt-0.5">
+                Enable location for turn-by-turn routing
+              </p>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-3 p-2 rounded-full hover:bg-slate-100 text-slate-500 transition-colors shrink-0"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Map */}
+        <div className="flex-1 relative min-h-0">
+          <MapContainer
+            center={mapCenter}
+            zoom={hasLoc ? 13 : 16}
+            style={{ height: '100%', width: '100%' }}
+            zoomControl
+          >
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <Marker position={[garage.lat, garage.lng]} icon={garageDivIcon} />
+            {hasLoc && <Marker position={[userLat!, userLng!]} icon={userDivIcon} />}
+            {routePositions.length > 0 && (
+              <Polyline positions={routePositions} color="#3b82f6" weight={5} opacity={0.85} />
+            )}
+            {hasLoc && <RecenterControl lat={userLat!} lng={userLng!} />}
+          </MapContainer>
+        </div>
+
+        {/* Steps */}
+        {steps.length > 1 && (
+          <div className="shrink-0 max-h-44 overflow-y-auto border-t border-slate-100">
+            <div className="px-4 py-2 space-y-0.5">
+              {steps.slice(0, -1).map((step, i) => (
+                <div key={i} className="flex items-start gap-2.5 py-1.5 border-b border-slate-50 last:border-0">
+                  <span className="text-[10px] font-bold text-primary bg-primary/10 rounded-full w-5 h-5 flex items-center justify-center shrink-0 mt-0.5">
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-slate-700 font-semibold leading-snug">
+                      {formatStep(step)}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{fmtDist(step.distance)}</p>
+                  </div>
+                  <ChevronRight size={12} className="text-slate-300 shrink-0 mt-1" />
+                </div>
+              ))}
+              <div className="flex items-start gap-2.5 py-1.5">
+                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 rounded-full w-5 h-5 flex items-center justify-center shrink-0 mt-0.5">
+                  <MapPin size={9} />
+                </span>
+                <p className="text-xs text-emerald-700 font-semibold">Arrive at {garage.name}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {routeError && (
+          <div className="shrink-0 px-4 py-2.5 bg-red-50 border-t border-red-100">
+            <p className="text-xs text-red-500 font-semibold text-center">{routeError}</p>
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
   );
 };
 
@@ -710,6 +919,7 @@ const GarageDetailView = () => {
 
   const garage = slug ? findGarageBySlug(slug, userLat, userLng) : undefined;
 
+  const [showNav, setShowNav] = useState(false);
   const [apiData, setApiData] = useState<ApiParkingResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -823,7 +1033,7 @@ const GarageDetailView = () => {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-md mx-auto px-4 py-4 space-y-4">
+      <div className="w-full px-3 py-4 space-y-4">
         {/* Hero card */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
@@ -859,16 +1069,13 @@ const GarageDetailView = () => {
           </div>
 
           {/* Navigate button */}
-          <a
-            href={`https://www.google.com/maps/dir/?api=1&destination=${garage.lat},${garage.lng}&travelmode=driving`}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            onClick={() => setShowNav(true)}
             className="mt-4 flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary/90 active:scale-[0.98] transition-all"
           >
             <Navigation2 size={16} />
             Navigate
-            <ExternalLink size={13} className="opacity-70" />
-          </a>
+          </button>
         </motion.div>
 
         {/* Live spots card */}
@@ -950,6 +1157,18 @@ const GarageDetailView = () => {
 
         {/* Occupancy Forecast */}
         <OccupancyForecast />
+
+        {/* Navigation Modal */}
+        <AnimatePresence>
+          {showNav && (
+            <NavigationModal
+              garage={garage}
+              userLat={userLat}
+              userLng={userLng}
+              onClose={() => setShowNav(false)}
+            />
+          )}
+        </AnimatePresence>
 
         {/* Facilities */}
         {garage.facilities.length > 0 && (
