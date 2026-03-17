@@ -563,12 +563,13 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
           >
             <div className="mt-3 space-y-2">
               {garageResults.slice(0, 3).map((g, i) => (
-                <div
+                <Link
                   key={g.slug}
-                  className={`flex items-center gap-2 rounded-xl px-3 py-2.5 border ${
+                  to={`/garage/${g.slug}`}
+                  className={`flex items-center gap-2 rounded-xl px-3 py-2.5 border transition-all active:scale-[0.98] ${
                     i === 0
-                      ? 'border-primary/30 bg-primary/5'
-                      : 'border-slate-100 bg-slate-50'
+                      ? 'border-primary/30 bg-primary/5 hover:border-primary/50'
+                      : 'border-slate-100 bg-slate-50 hover:border-slate-200'
                   }`}
                 >
                   {/* Rank badge */}
@@ -606,7 +607,7 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
                       {g.occupancy.toFixed(0)}%
                     </span>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
 
