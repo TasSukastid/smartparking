@@ -17,11 +17,13 @@ import {
   Loader2,
   X,
   ChevronRight,
+  Clock,
+  Bus,
 } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { motion, AnimatePresence } from 'motion/react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   createBrowserRouter,
   RouterProvider,
@@ -40,7 +42,8 @@ import {
   ApiBuilding,
 } from './types';
 import MOCK_BUILDINGS_DATA from './api.json';
-import PARKING_FORECAST_RAW from '../parking_forecast_7days.json';
+import FORECAST_MUICT from '../forecast_muict-building.json';
+import FORECAST_MUIC from '../forecast_mahidol-university-international-college.json';
 
 // ── Haversine distance ────────────────────────────────────────────────────────
 function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): string {
@@ -245,7 +248,7 @@ const AppNavbar = () => {
         )}
         <div className="flex-1">
           <h1 className="text-base font-black text-slate-900 leading-tight">
-            {isDetail ? 'Parking Details' : 'HackBoi ParkFlow'}
+            {isDetail ? 'Parking Details' : 'Mahidol ParkFlow'}
           </h1>
           {!isDetail && (
             <p className="text-[10px] text-slate-400 font-medium leading-tight">
@@ -342,6 +345,247 @@ const GarageListItem = ({ garage, index }: { garage: Garage; index: number }) =>
   );
 };
 
+// ── TripPlanner helpers ───────────────────────────────────────────────────────
+const _campusBuildings = (MOCK_BUILDINGS_DATA as unknown as ApiBuildingsResponse).buildings;
+
+/**
+ * Get forecast occupancy for a specific garage at a given arrival time.
+ *
+ * Currently all garages share one campus-wide forecast file.
+ * When real per-garage forecast files are available, swap this function to
+ * load the correct dataset by garageSlug (e.g. import a map of slug → ForecastJson).
+ */
+function getGarageForecastAt(garageSlug: string, date: Date): number {
+  const forecast = FORECAST_MAP[garageSlug] ?? FORECAST_FALLBACK;
+  const idx = date.getDay(); // 0 = Sun
+  const dayName = DAY_NAMES[idx === 0 ? 6 : idx - 1];
+  const dayData = forecast.days[dayName];
+  return dayData?.hourly[String(date.getHours())] ?? 0;
+}
+
+function fmtDuration(sec: number): string {
+  const min = Math.round(sec / 60);
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+function fmtHHMM(date: Date): string {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+type GarageRouteResult = {
+  slug: string;
+  name: string;
+  durationSec: number;
+};
+
+// ── TripPlanner ───────────────────────────────────────────────────────────────
+const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number }) => {
+  const hasLocation = userLat != null && userLng != null;
+
+  const nowTimeStr = (): string => {
+    const n = new Date();
+    return `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
+  };
+
+  const [departureTime, setDepartureTime] = useState<string>(nowTimeStr);
+  // slug → drive duration in seconds (fetched once per location)
+  const [durationMap, setDurationMap] = useState<Record<string, number>>({});
+  const [routeLoading, setRouteLoading] = useState(false);
+
+  // Fetch drive durations to every garage in parallel whenever location changes
+  useEffect(() => {
+    if (!hasLocation) return;
+    setRouteLoading(true);
+    const requests = _campusBuildings.map((b): Promise<GarageRouteResult | null> => {
+      const slug = slugify(b.building_name);
+      return fetch(
+        `https://router.project-osrm.org/route/v1/driving/${userLng},${userLat};${b.longitude},${b.latitude}?overview=false`,
+      )
+        .then((r) => r.json())
+        .then((data) =>
+          data.routes?.[0]
+            ? { slug, name: b.building_name, durationSec: data.routes[0].duration }
+            : null,
+        )
+        .catch(() => null);
+    });
+
+    Promise.all(requests).then((results) => {
+      const map: Record<string, number> = {};
+      for (const r of results) {
+        if (r) map[r.slug] = r.durationSec;
+      }
+      setDurationMap(map);
+      setRouteLoading(false);
+    });
+  }, [hasLocation, userLat, userLng]);
+
+  // Re-compute per-garage ETA + occupancy whenever departure time or durations change
+  const garageResults = useMemo(() => {
+    const [h, m] = departureTime.split(':').map(Number);
+    const dep = new Date();
+    dep.setHours(h, m, 0, 0);
+
+    return _campusBuildings
+      .map((b) => {
+        const slug = slugify(b.building_name);
+        const durationSec = durationMap[slug];
+        if (durationSec == null) return null;
+        const eta = new Date(dep.getTime() + durationSec * 1000);
+        const occupancy = getGarageForecastAt(slug, eta);
+        return {
+          slug,
+          name: b.building_name,
+          durationSec,
+          durationLabel: fmtDuration(durationSec),
+          etaStr: fmtHHMM(eta),
+          occupancy,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null)
+      // Sort: lowest occupancy first, tie-break by travel time
+      .sort((a, b) => a.occupancy - b.occupancy || a.durationSec - b.durationSec);
+  }, [departureTime, durationMap]);
+
+  const hasResults = garageResults.length > 0;
+  const best = garageResults[0] ?? null;
+  const allBusy = best != null && best.occupancy > 70;
+
+  const occColor = (occ: number) =>
+    occ >= 80 ? 'text-red-500' : occ >= 70 ? 'text-orange-500' : 'text-emerald-600';
+  const occBg = (occ: number) =>
+    occ >= 80 ? 'bg-red-50' : occ >= 70 ? 'bg-orange-50' : 'bg-emerald-50';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded-lg bg-primary/10 text-primary">
+            <Clock size={14} />
+          </div>
+          <h3 className="font-black text-slate-800 text-sm">Trip Planner</h3>
+        </div>
+        {routeLoading && <Loader2 size={13} className="animate-spin text-slate-400" />}
+      </div>
+
+      {/* Departure time picker */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <p className="text-[10px] text-slate-400 font-semibold mb-1">Departure time</p>
+          <input
+            type="time"
+            value={departureTime}
+            onChange={(e) => setDepartureTime(e.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+          />
+        </div>
+        <button
+          onClick={() => setDepartureTime(nowTimeStr())}
+          className="mt-4 text-[10px] font-bold text-primary underline shrink-0"
+        >
+          Now
+        </button>
+      </div>
+
+      {/* Per-garage results */}
+      <AnimatePresence>
+        {hasResults && (
+          <motion.div
+            key="results"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-3 space-y-2">
+              {garageResults.map((g, i) => (
+                <div
+                  key={g.slug}
+                  className={`flex items-center gap-2 rounded-xl px-3 py-2.5 border ${
+                    i === 0
+                      ? 'border-primary/30 bg-primary/5'
+                      : 'border-slate-100 bg-slate-50'
+                  }`}
+                >
+                  {/* Rank badge */}
+                  <span
+                    className={`text-[10px] font-black w-4 shrink-0 ${
+                      i === 0 ? 'text-primary' : 'text-slate-300'
+                    }`}
+                  >
+                    #{i + 1}
+                  </span>
+
+                  {/* Name */}
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-xs font-black truncate ${i === 0 ? 'text-slate-900' : 'text-slate-500'}`}>
+                      {g.name}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <Navigation size={9} className="text-slate-400 shrink-0" />
+                      <span className="text-[10px] text-slate-400 font-semibold">{g.durationLabel}</span>
+                      <span className="text-[10px] text-slate-300">·</span>
+                      <span className="text-[10px] text-slate-500 font-bold">ETA {g.etaStr}</span>
+                    </div>
+                  </div>
+
+                  {/* Occupancy chip */}
+                  <div className={`rounded-lg px-2 py-1 ${occBg(g.occupancy)} shrink-0`}>
+                    <span className={`text-[10px] font-black ${occColor(g.occupancy)}`}>
+                      {g.occupancy.toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Legend */}
+            <p className="text-[9px] text-slate-300 text-right mt-1.5 font-semibold">
+              Sorted by predicted occupancy at ETA
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Public transport recommendation */}
+      <AnimatePresence>
+        {allBusy && (
+          <motion.div
+            key="bus-warn"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-3 flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl p-3">
+              <Bus size={15} className="text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-black text-amber-700">แนะนำให้ใช้ขนส่งสาธารณะ</p>
+                <p className="text-[10px] text-amber-600 mt-0.5">
+                  ทุกลานจอดคาดว่าจะเต็มกว่า 70% เมื่อถึงที่หมาย — ลานที่ดีที่สุดขณะนั้นคือ{' '}
+                  <span className="font-black">{best?.name}</span> ({best?.occupancy.toFixed(0)}%)
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* No-location hint */}
+      {!hasLocation && !routeLoading && (
+        <p className="text-[10px] text-slate-400 mt-2.5 text-center">
+          Enable location to see travel time estimates
+        </p>
+      )}
+    </motion.div>
+  );
+};
+
 // ── GarageListView ─────────────────────────────────────────────────────────────
 const GarageListView = () => {
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>('idle');
@@ -351,6 +595,14 @@ const GarageListView = () => {
   const [search, setSearch] = useState('');
   // slug → live available count
   const [liveAvailable, setLiveAvailable] = useState<Record<string, number>>({});
+  const [userLat, setUserLat] = useState<number | undefined>(() => {
+    const v = sessionStorage.getItem('parkflow_lat');
+    return v ? parseFloat(v) : undefined;
+  });
+  const [userLng, setUserLng] = useState<number | undefined>(() => {
+    const v = sessionStorage.getItem('parkflow_lng');
+    return v ? parseFloat(v) : undefined;
+  });
 
   const requestGps = useCallback(() => {
     if (!navigator.geolocation) {
@@ -365,6 +617,8 @@ const GarageListView = () => {
         sessionStorage.setItem('parkflow_lat', String(lat));
         sessionStorage.setItem('parkflow_lng', String(lng));
         setGpsStatus('granted');
+        setUserLat(lat);
+        setUserLng(lng);
         setGarages(
           buildingsToGarages(MOCK_BUILDINGS_DATA as unknown as ApiBuildingsResponse, lat, lng),
         );
@@ -485,6 +739,9 @@ const GarageListView = () => {
       </AnimatePresence>
 
       <div className="w-full px-3 py-4 space-y-4">
+        {/* Trip Planner */}
+        <TripPlanner userLat={userLat} userLng={userLng} />
+
         {/* Search */}
         <div className="relative">
           <Search
@@ -997,20 +1254,28 @@ const DAY_SHORT: Record<DayName, string> = {
 type ForecastJson = {
   days: Record<DayName, { date: string; hourly: Record<string, number> }>;
 };
-const FORECAST = PARKING_FORECAST_RAW as unknown as ForecastJson;
+
+// Per-garage forecast map — add new garage slugs here when real files are available
+const FORECAST_MAP: Record<string, ForecastJson> = {
+  'muict-building': FORECAST_MUICT as unknown as ForecastJson,
+  'mahidol-university-international-college': FORECAST_MUIC as unknown as ForecastJson,
+};
+// Fallback: first available forecast
+const FORECAST_FALLBACK = Object.values(FORECAST_MAP)[0];
 
 function getTodayDayName(): DayName {
   const idx = new Date().getDay(); // 0 = Sun, 1 = Mon … 6 = Sat
   return DAY_NAMES[idx === 0 ? 6 : idx - 1];
 }
 
-const OccupancyForecast = () => {
+const OccupancyForecast = ({ garageSlug }: { garageSlug?: string }) => {
   const todayName = getTodayDayName();
   const [selectedDay, setSelectedDay] = useState<DayName>(todayName);
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
 
+  const forecast = (garageSlug ? FORECAST_MAP[garageSlug] : undefined) ?? FORECAST_FALLBACK;
   const currentHour = new Date().getHours();
-  const dayData = FORECAST.days[selectedDay];
+  const dayData = forecast.days[selectedDay];
   const hours = Array.from({ length: 24 }, (_, i) => ({
     hour: i,
     value: dayData?.hourly[String(i)] ?? 0,
@@ -1405,7 +1670,7 @@ const GarageDetailView = () => {
         </motion.div>
 
         {/* Occupancy Forecast */}
-        <OccupancyForecast />
+        <OccupancyForecast garageSlug={garage.slug} />
 
         {/* Navigation Modal */}
         <AnimatePresence>

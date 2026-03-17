@@ -64,12 +64,12 @@
         },
         {
             "id": 2,
-            "building_name": "Central Salaya",
-            "address": "99/9 Borommaratchachonnani Rd, Salaya, Phutthamonthon, Nakhon Pathom",
+            "building_name": "Mahidol University International College",
+            "address": "Mahidol University, Salaya Campus",
             "total_floors": 2,
             "created_at": "2026-02-18T22:11:34",
-            "latitude": 13.787941209509873,
-            "longitude": 100.2766620869205,
+            "latitude": 13.79294250010011,
+            "longitude": 100.32607940647028,
             "floors": [
                 {
                     "id": 2,
