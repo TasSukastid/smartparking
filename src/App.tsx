@@ -44,6 +44,9 @@ import {
 import MOCK_BUILDINGS_DATA from './api.json';
 import FORECAST_MUICT from '../forecast_muict-building.json';
 import FORECAST_MUIC from '../forecast_mahidol-university-international-college.json';
+import FORECAST_ENV from '../forecast_faculty-of-environment-and-resource-studies.json';
+import FORECAST_P3 from '../forecast_parking3.json';
+import FORECAST_P5 from '../forecast_parking5.json';
 
 // ── Haversine distance ────────────────────────────────────────────────────────
 function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): string {
@@ -372,6 +375,32 @@ function fmtHHMM(date: Date): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function fmtMeters(m: number): string {
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+}
+
+const DESTINATIONS = [
+  { id: 'ict', name: 'ICT', lat: 13.79469967230377, lng: 100.32458942713271 },
+  { id: 'en', name: 'EN', lat: 13.794788134067819, lng: 100.32111240131904 },
+  { id: 'ic', name: 'IC', lat: 13.792748618464428, lng: 100.32570296075565 },
+  { id: 'sc', name: 'SC', lat: 13.792934842217738, lng: 100.32276264639286 },
+  { id: 'president', name: 'Office of President', lat: 13.794409711965674, lng: 100.32564778566136 },
+] as const;
+type DestinationId = (typeof DESTINATIONS)[number]['id'];
+
 type GarageRouteResult = {
   slug: string;
   name: string;
@@ -388,6 +417,7 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
   };
 
   const [departureTime, setDepartureTime] = useState<string>(nowTimeStr);
+  const [destination, setDestination] = useState<DestinationId | ''>('');
   // slug → drive duration in seconds (fetched once per location)
   const [durationMap, setDurationMap] = useState<Record<string, number>>({});
   const [routeLoading, setRouteLoading] = useState(false);
@@ -425,6 +455,7 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
     const [h, m] = departureTime.split(':').map(Number);
     const dep = new Date();
     dep.setHours(h, m, 0, 0);
+    const dest = destination ? DESTINATIONS.find((d) => d.id === destination) ?? null : null;
 
     return _campusBuildings
       .map((b) => {
@@ -433,6 +464,9 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
         if (durationSec == null) return null;
         const eta = new Date(dep.getTime() + durationSec * 1000);
         const occupancy = getGarageForecastAt(slug, eta);
+        const distToDestM = dest
+          ? haversineMeters(b.latitude, b.longitude, dest.lat, dest.lng)
+          : null;
         return {
           slug,
           name: b.building_name,
@@ -440,12 +474,20 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
           durationLabel: fmtDuration(durationSec),
           etaStr: fmtHHMM(eta),
           occupancy,
+          distToDestM,
+          distToDestLabel: distToDestM != null ? fmtMeters(distToDestM) : null,
         };
       })
       .filter((r): r is NonNullable<typeof r> => r !== null)
-      // Sort: lowest occupancy first, tie-break by travel time
-      .sort((a, b) => a.occupancy - b.occupancy || a.durationSec - b.durationSec);
-  }, [departureTime, durationMap]);
+      .sort((a, b) => {
+        if (dest && a.distToDestM != null && b.distToDestM != null) {
+          // Sort by walking distance to destination, tie-break by occupancy
+          return a.distToDestM - b.distToDestM || a.occupancy - b.occupancy;
+        }
+        // Default: lowest occupancy first, tie-break by travel time
+        return a.occupancy - b.occupancy || a.durationSec - b.durationSec;
+      });
+  }, [departureTime, durationMap, destination]);
 
   const hasResults = garageResults.length > 0;
   const best = garageResults[0] ?? null;
@@ -473,23 +515,40 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
         {routeLoading && <Loader2 size={13} className="animate-spin text-slate-400" />}
       </div>
 
-      {/* Departure time picker */}
-      <div className="flex items-center gap-3">
+      {/* Departure time + Destination */}
+      <div className="flex items-end gap-2">
         <div className="flex-1">
           <p className="text-[10px] text-slate-400 font-semibold mb-1">Departure time</p>
-          <input
-            type="time"
-            value={departureTime}
-            onChange={(e) => setDepartureTime(e.target.value)}
-            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              type="time"
+              value={departureTime}
+              onChange={(e) => setDepartureTime(e.target.value)}
+              className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+            />
+            <button
+              onClick={() => setDepartureTime(nowTimeStr())}
+              className="text-[10px] font-bold text-primary underline shrink-0"
+            >
+              Now
+            </button>
+          </div>
         </div>
-        <button
-          onClick={() => setDepartureTime(nowTimeStr())}
-          className="mt-4 text-[10px] font-bold text-primary underline shrink-0"
+      </div>
+
+      {/* Destination selector */}
+      <div className="mt-2">
+        <p className="text-[10px] text-slate-400 font-semibold mb-1">Destination (คณะ / อาคาร)</p>
+        <select
+          value={destination}
+          onChange={(e) => setDestination(e.target.value as DestinationId | '')}
+          className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
         >
-          Now
-        </button>
+          <option value="">— None —</option>
+          {DESTINATIONS.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
       </div>
 
       {/* Per-garage results */}
@@ -503,7 +562,7 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
             className="overflow-hidden"
           >
             <div className="mt-3 space-y-2">
-              {garageResults.map((g, i) => (
+              {garageResults.slice(0, 3).map((g, i) => (
                 <div
                   key={g.slug}
                   className={`flex items-center gap-2 rounded-xl px-3 py-2.5 border ${
@@ -526,11 +585,18 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
                     <p className={`text-xs font-black truncate ${i === 0 ? 'text-slate-900' : 'text-slate-500'}`}>
                       {g.name}
                     </p>
-                    <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                       <Navigation size={9} className="text-slate-400 shrink-0" />
                       <span className="text-[10px] text-slate-400 font-semibold">{g.durationLabel}</span>
                       <span className="text-[10px] text-slate-300">·</span>
                       <span className="text-[10px] text-slate-500 font-bold">ETA {g.etaStr}</span>
+                      {g.distToDestLabel && (
+                        <>
+                          <span className="text-[10px] text-slate-300">·</span>
+                          <MapPin size={9} className="text-primary shrink-0" />
+                          <span className="text-[10px] text-primary font-bold">{g.distToDestLabel} from dest.</span>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -546,7 +612,7 @@ const TripPlanner = ({ userLat, userLng }: { userLat?: number; userLng?: number 
 
             {/* Legend */}
             <p className="text-[9px] text-slate-300 text-right mt-1.5 font-semibold">
-              Sorted by predicted occupancy at ETA
+              {destination ? 'Sorted by proximity to destination' : 'Sorted by predicted occupancy at ETA'}
             </p>
           </motion.div>
         )}
@@ -1259,6 +1325,9 @@ type ForecastJson = {
 const FORECAST_MAP: Record<string, ForecastJson> = {
   'muict-building': FORECAST_MUICT as unknown as ForecastJson,
   'mahidol-university-international-college': FORECAST_MUIC as unknown as ForecastJson,
+  'faculty-of-environment-and-resource-studies': FORECAST_ENV as unknown as ForecastJson,
+  'parking3': FORECAST_P3 as unknown as ForecastJson,
+  'parking5': FORECAST_P5 as unknown as ForecastJson,
 };
 // Fallback: first available forecast
 const FORECAST_FALLBACK = Object.values(FORECAST_MAP)[0];
